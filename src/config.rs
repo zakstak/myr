@@ -5,6 +5,10 @@ pub struct MyrConfig {
     pub saga_api_key: String,
     pub hyprland_socket: String,
     pub audio_device: String,
+    pub saga_host: String,
+    pub saga_voice_ip: String,
+    pub saga_voice_port: String,
+    pub myr_local_port: String,
 }
 
 impl MyrConfig {
@@ -14,6 +18,10 @@ impl MyrConfig {
             saga_api_key: get_env("SAGA_API_KEY", ""),
             hyprland_socket: get_env("HYPRLAND_INSTANCE_SIGNATURE", ""),
             audio_device: get_env("MYR_AUDIO_DEVICE", "default"),
+            saga_host: get_env("SAGA_HOST", "192.168.4.111"),
+            saga_voice_ip: get_env("SAGA_VOICE_IP", "10.0.0.60"),
+            saga_voice_port: get_env("SAGA_VOICE_PORT", "8765"),
+            myr_local_port: get_env("MYR_LOCAL_PORT", "18765"),
         }
     }
 }
