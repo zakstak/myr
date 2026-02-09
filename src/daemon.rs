@@ -186,9 +186,10 @@ impl Daemon {
             }
         };
 
-        let _windows = self.executor.list_windows()?;
+        let windows = self.executor.list_windows()?;
+        let context = windows.join("\n");
 
-        let response = match self.client.send_audio(&wav_bytes) {
+        let response = match self.client.send_audio(&wav_bytes, &context) {
             Ok(r) => r,
             Err(e) => {
                 let _ = self.notifier.error("Myr", "Cannot reach Saga server");
@@ -200,9 +201,10 @@ impl Daemon {
     }
 
     fn process_text(&mut self, text: &str) -> anyhow::Result<String> {
-        let _windows = self.executor.list_windows()?;
+        let windows = self.executor.list_windows()?;
+        let context = windows.join("\n");
 
-        let response = match self.client.send_text(text) {
+        let response = match self.client.send_text(text, &context) {
             Ok(r) => r,
             Err(e) => {
                 let _ = self.notifier.error("Myr", "Cannot reach Saga server");
@@ -372,8 +374,12 @@ mod tests {
 
         client
             .expect_send_audio()
+            .with(
+                mockall::predicate::eq(vec![1, 2, 3, 4]),
+                mockall::predicate::eq("Firefox\nTerminal".to_string()),
+            )
             .times(1)
-            .returning(|_| Ok("FOCUS title:Firefox".to_string()));
+            .returning(|_, _| Ok("FOCUS title:Firefox".to_string()));
 
         executor.expect_execute().times(1).returning(|_| Ok(()));
 
@@ -447,7 +453,7 @@ mod tests {
         client
             .expect_send_audio()
             .times(1)
-            .returning(|_| Ok("NONE".to_string()));
+            .returning(|_, _| Ok("NONE".to_string()));
 
         notifier
             .expect_notify()
@@ -477,7 +483,7 @@ mod tests {
         client
             .expect_send_audio()
             .times(1)
-            .returning(|_| Ok("I don't understand that command".to_string()));
+            .returning(|_, _| Ok("I don't understand that command".to_string()));
 
         notifier
             .expect_error()
@@ -507,7 +513,7 @@ mod tests {
         client
             .expect_send_audio()
             .times(1)
-            .returning(|_| Err(anyhow::anyhow!("Connection timeout")));
+            .returning(|_, _| Err(anyhow::anyhow!("Connection timeout")));
 
         notifier
             .expect_error()
@@ -535,9 +541,12 @@ mod tests {
 
         client
             .expect_send_text()
-            .withf(|text| text == "focus firefox")
+            .with(
+                mockall::predicate::eq("focus firefox"),
+                mockall::predicate::eq("Firefox".to_string()),
+            )
             .times(1)
-            .returning(|_| Ok("FOCUS title:Firefox".to_string()));
+            .returning(|_, _| Ok("FOCUS title:Firefox".to_string()));
 
         executor.expect_execute().times(1).returning(|_| Ok(()));
 
@@ -567,7 +576,7 @@ mod tests {
         client
             .expect_send_text()
             .times(1)
-            .returning(|_| Ok("FOCUS title:Firefox\nCLOSE title:Missing".to_string()));
+            .returning(|_, _| Ok("FOCUS title:Firefox\nCLOSE title:Missing".to_string()));
 
         executor
             .expect_execute()
@@ -635,7 +644,7 @@ mod tests {
         client
             .expect_send_audio()
             .times(1)
-            .returning(|_| Ok("FOCUS title:Firefox".to_string()));
+            .returning(|_, _| Ok("FOCUS title:Firefox".to_string()));
 
         executor.expect_execute().times(1).returning(|_| Ok(()));
 

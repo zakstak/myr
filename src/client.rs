@@ -6,8 +6,8 @@ use std::time::Duration;
 
 #[cfg_attr(test, mockall::automock)]
 pub trait SagaClient: Send + Sync {
-    fn send_text(&self, text: &str) -> anyhow::Result<String>;
-    fn send_audio(&self, wav_bytes: &[u8]) -> anyhow::Result<String>;
+    fn send_text(&self, text: &str, context: &str) -> anyhow::Result<String>;
+    fn send_audio(&self, wav_bytes: &[u8], context: &str) -> anyhow::Result<String>;
     fn health(&self) -> anyhow::Result<bool>;
 }
 
@@ -53,9 +53,7 @@ impl RealSagaClient {
 }
 
 impl SagaClient for RealSagaClient {
-    fn send_text(&self, text: &str) -> Result<String> {
-        let context = "";
-
+    fn send_text(&self, text: &str, context: &str) -> Result<String> {
         for attempt in 1..=2 {
             let form = Form::new()
                 .text("text", text.to_string())
@@ -76,9 +74,7 @@ impl SagaClient for RealSagaClient {
         unreachable!()
     }
 
-    fn send_audio(&self, wav_bytes: &[u8]) -> Result<String> {
-        let context = "";
-
+    fn send_audio(&self, wav_bytes: &[u8], context: &str) -> Result<String> {
         for attempt in 1..=2 {
             let audio_part = Part::bytes(wav_bytes.to_vec())
                 .file_name("audio.wav")
@@ -121,11 +117,14 @@ mod tests {
     fn test_mock_saga_client_send_text() {
         let mut mock = MockSagaClient::new();
         mock.expect_send_text()
-            .with(mockall::predicate::eq("focus terminal"))
+            .with(
+                mockall::predicate::eq("focus terminal"),
+                mockall::predicate::always(),
+            )
             .times(1)
-            .returning(|_| Ok("FOCUS class:kitty".to_string()));
+            .returning(|_, _| Ok("FOCUS class:kitty".to_string()));
 
-        let result = mock.send_text("focus terminal");
+        let result = mock.send_text("focus terminal", "");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "FOCUS class:kitty");
     }
@@ -137,9 +136,9 @@ mod tests {
 
         mock.expect_send_audio()
             .times(1)
-            .returning(|_| Ok("CLOSE title:Slack".to_string()));
+            .returning(|_, _| Ok("CLOSE title:Slack".to_string()));
 
-        let result = mock.send_audio(&wav_data);
+        let result = mock.send_audio(&wav_data, "");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "CLOSE title:Slack");
     }
@@ -161,9 +160,9 @@ mod tests {
 
         mock.expect_send_text()
             .times(1)
-            .returning(|_| Err(anyhow::anyhow!("Connection timeout")));
+            .returning(|_, _| Err(anyhow::anyhow!("Connection timeout")));
 
-        let result = mock.send_text("test");
+        let result = mock.send_text("test", "");
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
