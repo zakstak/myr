@@ -25,20 +25,27 @@ pub struct Command {
 
 impl Command {
     pub fn to_hyprctl(&self) -> String {
+        self.to_hyprctl_with_selector(&self.selector)
+    }
+
+    pub fn to_hyprctl_fallback(&self) -> Option<String> {
+        let alt = match &self.selector {
+            Selector::Title(v) => Selector::Class(v.clone()),
+            Selector::Class(v) => Selector::Title(v.clone()),
+        };
+        Some(self.to_hyprctl_with_selector(&alt))
+    }
+
+    fn to_hyprctl_with_selector(&self, selector: &Selector) -> String {
+        let selector_str = match selector {
+            Selector::Title(t) => format!("title:{}", t),
+            Selector::Class(c) => format!("class:{}", c),
+        };
+
         match self.verb {
-            Verb::Focus => {
-                let selector_str = match &self.selector {
-                    Selector::Title(t) => format!("title:{}", t),
-                    Selector::Class(c) => format!("class:{}", c),
-                };
-                format!("dispatch focuswindow {}", selector_str)
-            }
+            Verb::Focus => format!("dispatch focuswindow {}", selector_str),
             Verb::Move => {
                 let direction = self.args.get(0).map(|s| s.as_str()).unwrap_or("");
-                let selector_str = match &self.selector {
-                    Selector::Title(t) => format!("title:{}", t),
-                    Selector::Class(c) => format!("class:{}", c),
-                };
                 format!(
                     "dispatch movewindow {},address:{}",
                     direction.to_lowercase(),
@@ -48,36 +55,16 @@ impl Command {
             Verb::Resize => {
                 let width = self.args.get(0).map(|s| s.as_str()).unwrap_or("0");
                 let height = self.args.get(1).map(|s| s.as_str()).unwrap_or("0");
-                let selector_str = match &self.selector {
-                    Selector::Title(t) => format!("title:{}", t),
-                    Selector::Class(c) => format!("class:{}", c),
-                };
                 format!(
                     "dispatch resizewindowpixel {} {},address:{}",
                     width, height, selector_str
                 )
             }
-            Verb::Close => {
-                let selector_str = match &self.selector {
-                    Selector::Title(t) => format!("title:{}", t),
-                    Selector::Class(c) => format!("class:{}", c),
-                };
-                format!("dispatch closewindow {}", selector_str)
-            }
-            Verb::Fullscreen => {
-                let selector_str = match &self.selector {
-                    Selector::Title(t) => format!("title:{}", t),
-                    Selector::Class(c) => format!("class:{}", c),
-                };
-                format!("dispatch fullscreen address:{}", selector_str)
-            }
+            Verb::Close => format!("dispatch closewindow {}", selector_str),
+            Verb::Fullscreen => format!("dispatch fullscreen address:{}", selector_str),
             Verb::Swap => {
-                let sel1 = match &self.selector {
-                    Selector::Title(t) => format!("title:{}", t),
-                    Selector::Class(c) => format!("class:{}", c),
-                };
                 let sel2_raw = self.args.get(0).map(|s| s.as_str()).unwrap_or("");
-                format!("dispatch swapwindow {},address:{}", sel1, sel2_raw)
+                format!("dispatch swapwindow {},address:{}", selector_str, sel2_raw)
             }
         }
     }

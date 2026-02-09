@@ -56,10 +56,20 @@ impl HyprlandExecutor for RealHyprlandExecutor {
         let response = self.send_request(&hyprctl_cmd)?;
 
         if response.trim() == "ok" || response.trim().is_empty() {
-            Ok(())
-        } else {
-            anyhow::bail!("Hyprland dispatch failed: {}", response.trim())
+            return Ok(());
         }
+
+        // Fallback: if title: failed, try class: with the same value, and vice versa
+        if response.contains("No such window") {
+            if let Some(fallback_cmd) = cmd.to_hyprctl_fallback() {
+                let fallback_response = self.send_request(&fallback_cmd)?;
+                if fallback_response.trim() == "ok" || fallback_response.trim().is_empty() {
+                    return Ok(());
+                }
+            }
+        }
+
+        anyhow::bail!("Hyprland dispatch failed: {}", response.trim())
     }
 
     fn get_active_window(&self) -> anyhow::Result<String> {

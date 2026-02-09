@@ -14,7 +14,7 @@ pub struct MyrConfig {
 impl MyrConfig {
     pub fn from_env() -> Self {
         Self {
-            saga_api_url: get_env("SAGA_API_URL", "http://localhost:8765"),
+            saga_api_url: get_env("SAGA_API_URL", "http://localhost:18765"),
             saga_api_key: get_env("SAGA_API_KEY", ""),
             hyprland_socket: get_env("HYPRLAND_INSTANCE_SIGNATURE", ""),
             audio_device: get_env("MYR_AUDIO_DEVICE", "default"),
