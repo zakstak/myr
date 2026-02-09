@@ -14,7 +14,7 @@ pub struct CpalAudioCapture {
     samples: Arc<Mutex<Vec<f32>>>,
     stream: Option<cpal::Stream>,
     recording: Arc<Mutex<bool>>,
-    timeout_handle: Option<tokio::task::JoinHandle<()>>,
+    timeout_handle: Option<std::thread::JoinHandle<()>>,
     sample_rate: u32,
 }
 
@@ -42,7 +42,7 @@ impl AudioCapture for CpalAudioCapture {
             .context("Failed to get default input config")?;
 
         self.sample_rate = config.sample_rate().0;
-        
+
         {
             let mut samples = self.samples.lock().unwrap();
             samples.clear();
@@ -91,7 +91,10 @@ impl AudioCapture for CpalAudioCapture {
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         if *recording_clone.lock().unwrap() {
                             let mut samples = samples_clone.lock().unwrap();
-                            samples.extend(data.iter().map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0));
+                            samples.extend(
+                                data.iter()
+                                    .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
+                            );
                         }
                     },
                     |err| tracing::error!("Audio stream error: {}", err),
@@ -105,8 +108,8 @@ impl AudioCapture for CpalAudioCapture {
         self.stream = Some(stream);
 
         let recording_timeout = Arc::clone(&self.recording);
-        let timeout_handle = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+        let timeout_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(30));
             let mut recording = recording_timeout.lock().unwrap();
             *recording = false;
             tracing::warn!("Audio recording timed out after 30 seconds");
@@ -122,9 +125,8 @@ impl AudioCapture for CpalAudioCapture {
             *recording = false;
         }
 
-        if let Some(handle) = self.timeout_handle.take() {
-            handle.abort();
-        }
+        // Timeout thread will exit naturally since recording is now false
+        self.timeout_handle.take();
 
         if let Some(stream) = self.stream.take() {
             drop(stream);
@@ -158,7 +160,8 @@ impl AudioCapture for CpalAudioCapture {
 
             for &sample in &samples {
                 let sample_i16 = (sample.clamp(-1.0_f32, 1.0_f32) * i16::MAX as f32) as i16;
-                writer.write_sample(sample_i16)
+                writer
+                    .write_sample(sample_i16)
                     .context("Failed to write WAV sample")?;
             }
 
@@ -213,11 +216,15 @@ mod tests {
     #[test]
     fn test_silence_detection() {
         let silent_samples = vec![0.001, -0.002, 0.0015, -0.0005];
-        let rms = (silent_samples.iter().map(|&s| s * s).sum::<f32>() / silent_samples.len() as f32).sqrt();
+        let rms = (silent_samples.iter().map(|&s| s * s).sum::<f32>()
+            / silent_samples.len() as f32)
+            .sqrt();
         assert!(rms < 0.01, "Silent samples should have RMS < 0.01");
 
         let audible_samples = vec![0.5, -0.5, 0.3, -0.3];
-        let rms = (audible_samples.iter().map(|&s| s * s).sum::<f32>() / audible_samples.len() as f32).sqrt();
+        let rms = (audible_samples.iter().map(|&s| s * s).sum::<f32>()
+            / audible_samples.len() as f32)
+            .sqrt();
         assert!(rms >= 0.01, "Audible samples should have RMS >= 0.01");
     }
 
