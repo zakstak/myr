@@ -53,23 +53,32 @@ impl RealHyprlandExecutor {
 impl HyprlandExecutor for RealHyprlandExecutor {
     fn execute(&self, cmd: &Command) -> anyhow::Result<()> {
         let hyprctl_cmd = cmd.to_hyprctl();
-        let response = self.send_request(&hyprctl_cmd)?;
+        let commands: Vec<&str> = hyprctl_cmd.split(" ; ").collect();
 
-        if response.trim() == "ok" || response.trim().is_empty() {
-            return Ok(());
-        }
+        for (idx, single_cmd) in commands.iter().enumerate() {
+            let response = self.send_request(single_cmd)?;
 
-        // Fallback: if title: failed, try class: with the same value, and vice versa
-        if response.contains("No such window") {
-            if let Some(fallback_cmd) = cmd.to_hyprctl_fallback() {
-                let fallback_response = self.send_request(&fallback_cmd)?;
-                if fallback_response.trim() == "ok" || fallback_response.trim().is_empty() {
-                    return Ok(());
+            if response.trim() == "ok" || response.trim().is_empty() {
+                continue;
+            }
+
+            let is_first_command = idx == 0;
+            if is_first_command && response.contains("No such window") {
+                if let Some(fallback_cmd) = cmd.to_hyprctl_fallback() {
+                    let fallback_parts: Vec<&str> = fallback_cmd.split(" ; ").collect();
+                    if let Some(fallback_first) = fallback_parts.first() {
+                        let fallback_response = self.send_request(fallback_first)?;
+                        if fallback_response.trim() == "ok" || fallback_response.trim().is_empty() {
+                            continue;
+                        }
+                    }
                 }
             }
+
+            anyhow::bail!("Hyprland dispatch failed: {}", response.trim())
         }
 
-        anyhow::bail!("Hyprland dispatch failed: {}", response.trim())
+        Ok(())
     }
 
     fn get_active_window(&self) -> anyhow::Result<String> {

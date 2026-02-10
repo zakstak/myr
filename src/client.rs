@@ -42,13 +42,23 @@ impl RealSagaClient {
             .send()
             .context("HTTP request failed")?;
 
-        let json: serde_json::Value = response.json().context("Failed to parse JSON response")?;
+        let status = response.status();
+        let body = response.text().context("Failed to read response body")?;
+
+        tracing::debug!("API response status={} body={}", status, body);
+
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse JSON response")?;
+
+        if let Some(err) = json.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("API error: {}", err);
+        }
 
         json.get("commands")
             .or_else(|| json.get("text"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Missing commands/text in response"))
+            .ok_or_else(|| anyhow::anyhow!("Missing commands/text in response: {}", body))
     }
 }
 
