@@ -46,25 +46,37 @@ impl Command {
             Verb::Focus => format!("dispatch focuswindow {}", selector_str),
             Verb::Move => {
                 let direction = self.args.get(0).map(|s| s.as_str()).unwrap_or("");
+                let dir_short = match direction.to_uppercase().as_str() {
+                    "LEFT" => "l",
+                    "RIGHT" => "r",
+                    "UP" => "u",
+                    "DOWN" => "d",
+                    _ => "l",
+                };
                 format!(
-                    "dispatch movewindow {},address:{}",
-                    direction.to_lowercase(),
-                    selector_str
+                    "dispatch focuswindow {} ; dispatch movewindow {}",
+                    selector_str, dir_short
                 )
             }
             Verb::Resize => {
-                let width = self.args.get(0).map(|s| s.as_str()).unwrap_or("0");
-                let height = self.args.get(1).map(|s| s.as_str()).unwrap_or("0");
+                let width_pct = self.args.get(0).map(|s| s.as_str()).unwrap_or("50");
+                let height_pct = self.args.get(1).map(|s| s.as_str()).unwrap_or("50");
                 format!(
-                    "dispatch resizewindowpixel {} {},address:{}",
-                    width, height, selector_str
+                    "dispatch focuswindow {} ; dispatch resizeactive {}% {}%",
+                    selector_str, width_pct, height_pct
                 )
             }
             Verb::Close => format!("dispatch closewindow {}", selector_str),
-            Verb::Fullscreen => format!("dispatch fullscreen address:{}", selector_str),
+            Verb::Fullscreen => format!(
+                "dispatch focuswindow {} ; dispatch fullscreen 1",
+                selector_str
+            ),
             Verb::Swap => {
                 let sel2_raw = self.args.get(0).map(|s| s.as_str()).unwrap_or("");
-                format!("dispatch swapwindow {},address:{}", selector_str, sel2_raw)
+                format!(
+                    "dispatch focuswindow {} ; dispatch swapwindow {}",
+                    selector_str, sel2_raw
+                )
             }
         }
     }
@@ -365,7 +377,7 @@ CLOSE class:Terminal
         };
         assert_eq!(
             cmd.to_hyprctl(),
-            "dispatch movewindow left,address:title:Terminal"
+            "dispatch focuswindow title:Terminal ; dispatch movewindow l"
         );
     }
 
@@ -374,11 +386,11 @@ CLOSE class:Terminal
         let cmd = Command {
             verb: Verb::Resize,
             selector: Selector::Class("Chrome".to_string()),
-            args: vec!["1920".to_string(), "1080".to_string()],
+            args: vec!["50".to_string(), "50".to_string()],
         };
         assert_eq!(
             cmd.to_hyprctl(),
-            "dispatch resizewindowpixel 1920 1080,address:class:Chrome"
+            "dispatch focuswindow class:Chrome ; dispatch resizeactive 50% 50%"
         );
     }
 
@@ -389,7 +401,10 @@ CLOSE class:Terminal
             selector: Selector::Title("Video".to_string()),
             args: vec![],
         };
-        assert_eq!(cmd.to_hyprctl(), "dispatch fullscreen address:title:Video");
+        assert_eq!(
+            cmd.to_hyprctl(),
+            "dispatch focuswindow title:Video ; dispatch fullscreen 1"
+        );
     }
 
     #[test]
@@ -401,7 +416,7 @@ CLOSE class:Terminal
         };
         assert_eq!(
             cmd.to_hyprctl(),
-            "dispatch swapwindow title:Left,address:class:Right"
+            "dispatch focuswindow title:Left ; dispatch swapwindow class:Right"
         );
     }
 }
