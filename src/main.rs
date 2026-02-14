@@ -22,6 +22,10 @@ enum Commands {
     },
     /// Toggle voice capture on/off
     VoiceToggle,
+    /// Start voice capture (for push-to-talk key down)
+    VoiceStart,
+    /// Stop voice capture and process (for push-to-talk key up)
+    VoiceStop,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,6 +43,12 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::VoiceToggle => {
             send_socket_command("VOICE_TOGGLE")?;
+        }
+        Commands::VoiceStart => {
+            send_socket_command("VOICE_START")?;
+        }
+        Commands::VoiceStop => {
+            send_socket_command("VOICE_STOP")?;
         }
     }
 
