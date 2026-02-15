@@ -26,6 +26,17 @@ enum Commands {
     VoiceStart,
     /// Stop voice capture and process (for push-to-talk key up)
     VoiceStop,
+    /// Start dictation recording
+    DictateStart,
+    /// Stop dictation and transcribe/type
+    DictateStop,
+    /// Add a word to the personal dictionary
+    AddWord {
+        /// Spoken form
+        spoken: String,
+        /// Written form
+        written: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -49,6 +60,40 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::VoiceStop => {
             send_socket_command("VOICE_STOP")?;
+        }
+        Commands::DictateStart => {
+            send_socket_command("DICTATE_START")?;
+        }
+        Commands::DictateStop => {
+            send_socket_command("DICTATE_STOP")?;
+        }
+        Commands::AddWord { spoken, written } => {
+            let config_dir = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+                .join(".config/saga/voice");
+
+            std::fs::create_dir_all(&config_dir)?;
+
+            let dict_path = config_dir.join("personal-dictionary.toml");
+
+            let mut doc = if dict_path.exists() {
+                std::fs::read_to_string(&dict_path)?.parse::<toml_edit::DocumentMut>()?
+            } else {
+                let mut doc = toml_edit::DocumentMut::new();
+                let mut terms = toml_edit::Table::new();
+                terms.set_implicit(true);
+                doc.insert("terms", toml_edit::Item::Table(terms));
+
+                let header = "# Personal dictionary — your custom terms\n# Add entries with: myr add-word \"spoken\" \"Written\"\n\n";
+                doc.decor_mut().set_prefix(header);
+                doc
+            };
+
+            doc["terms"][&spoken] = toml_edit::value(&written);
+
+            std::fs::write(&dict_path, doc.to_string())?;
+
+            println!("Added: \"{}\" → \"{}\"", spoken, written);
         }
     }
 

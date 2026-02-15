@@ -9,6 +9,8 @@ reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls", "bl
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = "0.22"
+dirs = "5"
 cpal = "0.15"
 hound = "3"
 anyhow = "1"

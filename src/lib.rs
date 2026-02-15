@@ -5,4 +5,5 @@ pub mod daemon;
 pub mod dsl;
 pub mod hyprland;
 pub mod notify;
+pub mod snippets;
 pub mod tunnel;
