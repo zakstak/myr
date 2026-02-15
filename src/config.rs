@@ -1,3 +1,4 @@
+use crate::snippets::Snippet;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
@@ -38,12 +39,6 @@ pub fn get_env(key: &str, default: &str) -> String {
 struct DictionaryFile {
     #[serde(default)]
     terms: HashMap<String, String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Snippet {
-    pub trigger: String,
-    pub expand: String,
 }
 
 #[derive(Debug, Deserialize)]
