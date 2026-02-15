@@ -1,6 +1,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
+
+use anyhow::Context;
 
 use crate::audio::{AudioCapture, CpalAudioCapture};
 use crate::client::{RealSagaClient, SagaClient};
@@ -43,6 +46,11 @@ pub fn start(config: MyrConfig) -> anyhow::Result<()> {
 
     let executor = RealHyprlandExecutor::new()?;
     tracing::info!("Hyprland detected");
+
+    match ProcessCommand::new("wtype").arg("--version").output() {
+        Ok(_) => tracing::info!("wtype available for dictation"),
+        Err(_) => tracing::warn!("wtype not found — dictation typing will fail"),
+    }
 
     let client = RealSagaClient::new(&config)?;
     let audio = CpalAudioCapture::new();
@@ -275,8 +283,7 @@ impl Daemon {
         let final_text = expand_snippets(&response.refined, &config.snippets)
             .unwrap_or_else(|| response.refined.clone());
 
-        // TODO(task-7): type_text(&final_text) via wtype
-        tracing::info!("Would type: {}", final_text);
+        type_text(&final_text)?;
 
         let char_count = final_text.len();
         let _ = self
@@ -338,6 +345,21 @@ impl Daemon {
 pub fn socket_path() -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(runtime_dir).join("myr.sock")
+}
+
+fn type_text(text: &str) -> anyhow::Result<()> {
+    let output = ProcessCommand::new("wtype")
+        .arg("-d")
+        .arg("10")
+        .arg(text)
+        .output()
+        .context("Failed to execute wtype — is it installed?")?;
+
+    if !output.status.success() {
+        anyhow::bail!("wtype failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    Ok(())
 }
 
 fn parse_message(line: &str) -> Option<Message> {
