@@ -147,7 +147,7 @@ impl SagaClient for RealSagaClient {
             .context("Failed to set MIME type")?;
 
         let dict_json =
-            serde_json::to_string(dictionary).context("Failed to serialize dictionary")?;
+            serialize_developer_dictionary(dictionary).context("Failed to serialize dictionary")?;
         let personal_dict_json = serde_json::to_string(personal_dictionary)
             .context("Failed to serialize personal dictionary")?;
 
@@ -183,9 +183,17 @@ impl SagaClient for RealSagaClient {
     }
 }
 
+fn serialize_developer_dictionary(dictionary: &HashMap<String, String>) -> Result<String> {
+    let mut terms: Vec<String> = dictionary.values().cloned().collect();
+    terms.sort();
+    terms.dedup();
+    serde_json::to_string(&terms).context("Failed to serialize developer dictionary terms")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn test_mock_saga_client_send_text() {
@@ -250,6 +258,41 @@ mod tests {
         assert_eq!(resp.raw, "hello world");
         assert_eq!(resp.refined, "Hello, world!");
         assert_eq!(resp.latency_ms, 150);
+    }
+
+    #[test]
+    fn test_serialize_developer_dictionary_as_json_string_array() {
+        let dictionary = HashMap::from([
+            ("nicks".to_string(), "NixOS".to_string()),
+            ("kube".to_string(), "Kubernetes".to_string()),
+            ("k8s".to_string(), "Kubernetes".to_string()),
+        ]);
+
+        let serialized = serialize_developer_dictionary(&dictionary).unwrap();
+        let parsed: Value = serde_json::from_str(&serialized).unwrap();
+
+        let terms = parsed.as_array().unwrap();
+        assert_eq!(terms.len(), 2);
+        assert_eq!(terms[0].as_str().unwrap(), "Kubernetes");
+        assert_eq!(terms[1].as_str().unwrap(), "NixOS");
+    }
+
+    #[test]
+    fn test_personal_dictionary_serializes_as_json_object_mapping() {
+        let personal = HashMap::from([
+            ("nicks".to_string(), "NixOS".to_string()),
+            ("dock compose".to_string(), "Docker Compose".to_string()),
+        ]);
+
+        let serialized = serde_json::to_string(&personal).unwrap();
+        let parsed: Value = serde_json::from_str(&serialized).unwrap();
+
+        let obj = parsed.as_object().unwrap();
+        assert_eq!(obj.get("nicks").and_then(|v| v.as_str()), Some("NixOS"));
+        assert_eq!(
+            obj.get("dock compose").and_then(|v| v.as_str()),
+            Some("Docker Compose")
+        );
     }
 
     #[test]
