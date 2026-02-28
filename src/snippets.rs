@@ -8,22 +8,34 @@ pub struct Snippet {
 ///
 /// Matching rules:
 /// - If entire text (trimmed) exactly matches a trigger → expand
-/// - If text starts with trigger + space → expand snippet + append rest
+/// - If text (trim-start) starts with trigger and the next char is whitespace or end
+///   → expand snippet + append rest
 /// - Otherwise → return None (no match)
 pub fn expand_snippets(text: &str, snippets: &[Snippet]) -> Option<String> {
     let trimmed = text.trim();
+    let trimmed_start = text.trim_start();
 
     // Check exact match
     for snippet in snippets {
+        if !snippet.trigger.starts_with(':') {
+            continue;
+        }
+
         if trimmed == snippet.trigger {
             return Some(snippet.expand.clone());
         }
     }
 
-    // Check prefix match
+    // Check start-of-text match with whole-word boundary
     for snippet in snippets {
-        if trimmed.starts_with(&format!("{} ", snippet.trigger)) {
-            let rest = &trimmed[snippet.trigger.len()..];
+        if !snippet.trigger.starts_with(':') || !trimmed_start.starts_with(&snippet.trigger) {
+            continue;
+        }
+
+        let rest = &trimmed_start[snippet.trigger.len()..];
+        let boundary_ok = rest.chars().next().map(char::is_whitespace).unwrap_or(true);
+
+        if boundary_ok {
             return Some(format!("{}{}", snippet.expand, rest));
         }
     }
@@ -55,6 +67,10 @@ mod tests {
             expand_snippets(":sig", &snippets),
             Some("Best regards,\nZack".to_string())
         );
+        assert_eq!(
+            expand_snippets("  :sig  ", &snippets),
+            Some("Best regards,\nZack".to_string())
+        );
     }
 
     #[test]
@@ -64,13 +80,18 @@ mod tests {
             expand_snippets(":sig hello", &snippets),
             Some("Best regards,\nZack hello".to_string())
         );
+        assert_eq!(
+            expand_snippets("   :sig hello", &snippets),
+            Some("Best regards,\nZack hello".to_string())
+        );
     }
 
     #[test]
     fn test_no_match() {
         let snippets = mock_snippets();
         assert_eq!(expand_snippets("hello world", &snippets), None);
-        assert_eq!(expand_snippets(":signature", &snippets), None);
+        assert_eq!(expand_snippets(":siggy", &snippets), None);
+        assert_eq!(expand_snippets("hello :sig", &snippets), None);
     }
 
     #[test]
