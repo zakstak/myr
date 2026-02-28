@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 
 pub struct MyrConfig {
@@ -56,6 +58,79 @@ pub struct DictationConfig {
 }
 
 impl DictationConfig {
+    const DEVELOPER_DICTIONARY_DEFAULT: &str = r#"# Developer dictionary - pre-loaded tech terms
+# Format: spoken form -> written form
+# These are injected into the LLM refinement prompt as few-shot examples
+
+[terms]
+kubernetes = "Kubernetes"
+supabase = "Supabase"
+vercel = "Vercel"
+cloudflare = "Cloudflare"
+typescript = "TypeScript"
+javascript = "JavaScript"
+postgresql = "PostgreSQL"
+postgres = "PostgreSQL"
+"docker compose" = "Docker Compose"
+graphql = "GraphQL"
+nextjs = "Next.js"
+"next js" = "Next.js"
+mongodb = "MongoDB"
+redis = "Redis"
+nginx = "NGINX"
+fastapi = "FastAPI"
+pytorch = "PyTorch"
+tensorflow = "TensorFlow"
+"github actions" = "GitHub Actions"
+"ci cd" = "CI/CD"
+nixos = "NixOS"
+neovim = "Neovim"
+"#;
+
+    const PERSONAL_DICTIONARY_DEFAULT: &str = r#"# Personal dictionary - your custom terms
+# Add entries with: myr add-word "spoken" "Written"
+
+[terms]
+# Example:
+# nicks = "NixOS"
+# saga = "SAGA"
+"#;
+
+    const SNIPPETS_DEFAULT: &str = r#"# Voice-triggered snippets
+# Say the trigger phrase, get the expanded text
+# Triggers use : prefix to avoid collision with natural speech
+
+[[snippet]]
+trigger = ":sig"
+expand = "Best regards,\nZack"
+
+[[snippet]]
+trigger = ":email"
+expand = "zack@example.com"
+
+[[snippet]]
+trigger = ":addr"
+expand = "123 Main Street, Anytown, USA"
+
+# Code snippets
+[[snippet]]
+trigger = ":react"
+expand = """
+import React from 'react';
+
+export default function Component() {
+  return (
+    <div>
+
+    </div>
+  );
+}"""
+
+[[snippet]]
+trigger = ":usestate"
+expand = "const [state, setState] = useState();"
+"#;
+
     fn config_dir() -> PathBuf {
         let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(home).join(".config/saga/voice")
@@ -64,10 +139,8 @@ impl DictationConfig {
     pub fn load() -> Self {
         let dir = Self::config_dir();
 
-        if !dir.exists() {
-            let _ = fs::create_dir_all(&dir);
-            Self::write_defaults(&dir);
-        }
+        let _ = fs::create_dir_all(&dir);
+        Self::write_defaults(&dir);
 
         let developer_dictionary = Self::load_dictionary(dir.join("developer-dictionary.toml"));
         let personal_dictionary = Self::load_dictionary(dir.join("personal-dictionary.toml"));
@@ -107,13 +180,21 @@ impl DictationConfig {
     }
 
     fn write_defaults(dir: &PathBuf) {
-        let dict_default = "# Dictionary — spoken form → written form\n\n[terms]\n";
-        let snippets_default =
-            "# Voice-triggered snippets\n# [[snippet]]\n# trigger = \":sig\"\n# expand = \"Best regards\"\n";
+        Self::write_default_file(
+            dir.join("developer-dictionary.toml"),
+            Self::DEVELOPER_DICTIONARY_DEFAULT,
+        );
+        Self::write_default_file(
+            dir.join("personal-dictionary.toml"),
+            Self::PERSONAL_DICTIONARY_DEFAULT,
+        );
+        Self::write_default_file(dir.join("snippets.toml"), Self::SNIPPETS_DEFAULT);
+    }
 
-        let _ = fs::write(dir.join("developer-dictionary.toml"), dict_default);
-        let _ = fs::write(dir.join("personal-dictionary.toml"), dict_default);
-        let _ = fs::write(dir.join("snippets.toml"), snippets_default);
+    fn write_default_file(path: PathBuf, content: &str) {
+        if let Ok(mut file) = OpenOptions::new().write(true).create_new(true).open(&path) {
+            let _ = file.write_all(content.as_bytes());
+        }
     }
 }
 
@@ -180,5 +261,44 @@ mod tests {
         let snippets =
             DictationConfig::load_snippets(PathBuf::from("/nonexistent/path/snippets.toml"));
         assert!(snippets.is_empty());
+    }
+
+    #[test]
+    fn test_write_defaults_populates_template_content() {
+        let tmp = std::env::temp_dir().join("myr_test_dictation_defaults");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        DictationConfig::write_defaults(&tmp);
+
+        let dev = fs::read_to_string(tmp.join("developer-dictionary.toml")).unwrap();
+        let snippets = fs::read_to_string(tmp.join("snippets.toml")).unwrap();
+
+        assert!(dev.contains("kubernetes = \"Kubernetes\""));
+        assert!(snippets.contains("[[snippet]]"));
+        assert!(snippets.contains("trigger = \":sig\""));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_write_defaults_does_not_overwrite_existing_files() {
+        let tmp = std::env::temp_dir().join("myr_test_dictation_defaults_idempotent");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        fs::write(
+            tmp.join("developer-dictionary.toml"),
+            "[terms]\nkubernetes = \"Custom\"\n",
+        )
+        .unwrap();
+
+        DictationConfig::write_defaults(&tmp);
+
+        let dev = fs::read_to_string(tmp.join("developer-dictionary.toml")).unwrap();
+        assert!(dev.contains("kubernetes = \"Custom\""));
+        assert!(!dev.contains("kubernetes = \"Kubernetes\""));
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
