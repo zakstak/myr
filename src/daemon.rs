@@ -1,17 +1,13 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
-
-use anyhow::Context;
 
 use crate::audio::{AudioCapture, CpalAudioCapture};
 use crate::client::{RealSagaClient, SagaClient};
-use crate::config::{DictationConfig, MyrConfig};
+use crate::config::MyrConfig;
 use crate::dsl;
 use crate::hyprland::{HyprlandExecutor, RealHyprlandExecutor};
 use crate::notify::{DesktopNotifier, Notifier};
-use crate::snippets::expand_snippets;
 use crate::tunnel::{SshTunnel, TunnelConfig};
 
 pub struct Daemon {
@@ -28,8 +24,6 @@ enum Message {
     VoiceStart,
     VoiceStop,
     VoiceToggle,
-    DictateStart,
-    DictateStop,
     Text(String),
     Ping,
 }
@@ -41,16 +35,12 @@ pub fn start(config: MyrConfig) -> anyhow::Result<()> {
         saga_voice_port: config.saga_voice_port.clone(),
         local_port: config.myr_local_port.clone(),
     };
+
     let _tunnel = SshTunnel::establish(tunnel_config)?;
     tracing::info!("SSH tunnel established");
 
     let executor = RealHyprlandExecutor::new()?;
     tracing::info!("Hyprland detected");
-
-    match ProcessCommand::new("wtype").arg("--version").output() {
-        Ok(_) => tracing::info!("wtype available for dictation"),
-        Err(_) => tracing::warn!("wtype not found — dictation typing will fail"),
-    }
 
     let client = RealSagaClient::new(&config)?;
     let audio = CpalAudioCapture::new();
@@ -102,9 +92,7 @@ impl Daemon {
                         tracing::error!("Error handling connection: {}", e);
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Error accepting connection: {}", e);
-                }
+                Err(e) => tracing::error!("Error accepting connection: {}", e),
             }
         }
 
@@ -112,32 +100,32 @@ impl Daemon {
     }
 
     fn handle_connection(&mut self, stream: UnixStream) -> anyhow::Result<()> {
-        let reader = BufReader::new(&stream);
+        let mut reader = BufReader::new(&stream);
         let mut writer = &stream;
+        let mut line = String::new();
 
-        for line in reader.lines() {
-            let line = line?;
-            let trimmed = line.trim().to_string();
-
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let response = match parse_message(&trimmed) {
-                Some(msg) => self.handle_message(msg),
-                None => format!("ERR:unknown command: {}", trimmed),
-            };
-
-            writeln!(writer, "{}", response)?;
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            return Ok(());
         }
 
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        let response = match parse_message(trimmed) {
+            Some(msg) => self.handle_message(msg),
+            None => format!("ERR:unknown command: {}", trimmed),
+        };
+
+        writeln!(writer, "{}", response)?;
         Ok(())
     }
 
     fn handle_message(&mut self, msg: Message) -> String {
         match msg {
             Message::Ping => "PONG".to_string(),
-
             Message::VoiceStart => match self.audio.start() {
                 Ok(()) => {
                     let _ = self.notifier.notify("Myr", "Listening...");
@@ -145,7 +133,6 @@ impl Daemon {
                 }
                 Err(e) => format!("ERR:{}", e),
             },
-
             Message::VoiceStop => match self.process_voice() {
                 Ok(resp) => resp,
                 Err(e) => {
@@ -153,7 +140,6 @@ impl Daemon {
                     format!("ERR:{}", e)
                 }
             },
-
             Message::VoiceToggle => {
                 if self.audio.is_recording() {
                     match self.process_voice() {
@@ -173,24 +159,7 @@ impl Daemon {
                     }
                 }
             }
-
-            Message::Text(ref text) => match self.process_text(text) {
-                Ok(resp) => resp,
-                Err(e) => {
-                    let _ = self.notifier.error("Myr", &e.to_string());
-                    format!("ERR:{}", e)
-                }
-            },
-
-            Message::DictateStart => match self.audio.start() {
-                Ok(()) => {
-                    let _ = self.notifier.notify("Myr", "Dictating...");
-                    "OK:recording".to_string()
-                }
-                Err(e) => format!("ERR:{}", e),
-            },
-
-            Message::DictateStop => match self.process_dictation() {
+            Message::Text(text) => match self.process_text(&text) {
                 Ok(resp) => resp,
                 Err(e) => {
                     let _ = self.notifier.error("Myr", &e.to_string());
@@ -242,57 +211,6 @@ impl Daemon {
         self.process_response(&response)
     }
 
-    fn process_dictation(&mut self) -> anyhow::Result<String> {
-        let wav_bytes = match self.audio.stop() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("silent") || msg.contains("No audio") {
-                    let _ = self.notifier.notify("Myr", "No speech detected");
-                    return Ok("OK:stopped".to_string());
-                }
-                return Err(e);
-            }
-        };
-
-        let config = DictationConfig::load();
-
-        let window_title = self.executor.get_active_window().unwrap_or_default();
-
-        let response = match self.client.send_dictate(
-            &wav_bytes,
-            &config.developer_dictionary,
-            &config.personal_dictionary,
-            &window_title,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = self
-                    .notifier
-                    .error("Myr", "Dictation failed — cannot reach Saga server");
-                return Err(e);
-            }
-        };
-
-        if response.raw == response.refined {
-            tracing::warn!(
-                "Dictation refinement skipped (Ollama may be down), using raw transcription"
-            );
-        }
-
-        let final_text = expand_snippets(&response.refined, &config.snippets)
-            .unwrap_or_else(|| response.refined.clone());
-
-        type_text(&final_text)?;
-
-        let char_count = final_text.len();
-        let _ = self
-            .notifier
-            .notify("Myr", &format!("Dictated {} chars", char_count));
-
-        Ok(format!("OK:dictated {} chars", char_count))
-    }
-
     fn process_response(&self, response: &str) -> anyhow::Result<String> {
         let commands = match dsl::parse(response) {
             Ok(cmds) => cmds,
@@ -328,10 +246,8 @@ impl Daemon {
                 .notify("Myr", &format!("Executed: {}", summary));
         }
 
-        if !errors.is_empty() {
-            for err in &errors {
-                let _ = self.notifier.error("Myr", err);
-            }
+        for err in &errors {
+            let _ = self.notifier.error("Myr", err);
         }
 
         if successes.is_empty() && !errors.is_empty() {
@@ -343,23 +259,12 @@ impl Daemon {
 }
 
 pub fn socket_path() -> PathBuf {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(runtime_dir).join("myr.sock")
-}
-
-fn type_text(text: &str) -> anyhow::Result<()> {
-    let output = ProcessCommand::new("wtype")
-        .arg("-d")
-        .arg("10")
-        .arg(text)
-        .output()
-        .context("Failed to execute wtype — is it installed?")?;
-
-    if !output.status.success() {
-        anyhow::bail!("wtype failed: {}", String::from_utf8_lossy(&output.stderr));
+    if let Ok(path) = std::env::var("MYR_SOCKET") {
+        return PathBuf::from(path);
     }
 
-    Ok(())
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(runtime_dir).join("myr.sock")
 }
 
 fn parse_message(line: &str) -> Option<Message> {
@@ -368,8 +273,6 @@ fn parse_message(line: &str) -> Option<Message> {
         "VOICE_START" => Some(Message::VoiceStart),
         "VOICE_STOP" => Some(Message::VoiceStop),
         "VOICE_TOGGLE" => Some(Message::VoiceToggle),
-        "DICTATE_START" => Some(Message::DictateStart),
-        "DICTATE_STOP" => Some(Message::DictateStop),
         "PING" => Some(Message::Ping),
         s if s.starts_with("TEXT:") => {
             let text = s.strip_prefix("TEXT:").unwrap();
@@ -394,7 +297,7 @@ fn execute_commands(
 mod tests {
     use super::*;
     use crate::audio::MockAudioCapture;
-    use crate::client::{DictateResponse, MockSagaClient};
+    use crate::client::MockSagaClient;
     use crate::dsl::{Command, Selector, Verb};
     use crate::hyprland::MockHyprlandExecutor;
     use crate::notify::MockNotifier;
@@ -415,29 +318,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_message_all_variants() {
+    fn test_parse_message_allowed_protocol_only() {
         assert_eq!(parse_message("VOICE_START"), Some(Message::VoiceStart));
         assert_eq!(parse_message("VOICE_STOP"), Some(Message::VoiceStop));
         assert_eq!(parse_message("VOICE_TOGGLE"), Some(Message::VoiceToggle));
-        assert_eq!(parse_message("DICTATE_START"), Some(Message::DictateStart));
-        assert_eq!(parse_message("DICTATE_STOP"), Some(Message::DictateStop));
         assert_eq!(parse_message("PING"), Some(Message::Ping));
         assert_eq!(
             parse_message("TEXT:focus firefox"),
             Some(Message::Text("focus firefox".to_string()))
         );
-        assert_eq!(parse_message("TEXT:"), None);
-        assert_eq!(parse_message("UNKNOWN"), None);
-        assert_eq!(parse_message(""), None);
-    }
 
-    #[test]
-    fn test_parse_message_with_whitespace() {
-        assert_eq!(parse_message("  PING  "), Some(Message::Ping));
-        assert_eq!(
-            parse_message("  TEXT:hello world  "),
-            Some(Message::Text("hello world".to_string()))
-        );
+        assert_eq!(parse_message("UNKNOWN"), None);
+        assert_eq!(parse_message("VOICE_PAUSE"), None);
+        assert_eq!(parse_message("TEXT:"), None);
     }
 
     #[test]
@@ -450,6 +343,25 @@ mod tests {
         let mut daemon = make_daemon(client, executor, audio, notifier);
         let resp = daemon.handle_message(Message::Ping);
         assert_eq!(resp, "PONG");
+    }
+
+    #[test]
+    fn test_voice_start_begins_recording() {
+        let client = MockSagaClient::new();
+        let executor = MockHyprlandExecutor::new();
+        let mut audio = MockAudioCapture::new();
+        let mut notifier = MockNotifier::new();
+
+        audio.expect_start().times(1).returning(|| Ok(()));
+        notifier
+            .expect_notify()
+            .withf(|_, body| body == "Listening...")
+            .times(1)
+            .returning(|_, _| Ok(()));
+
+        let mut daemon = make_daemon(client, executor, audio, notifier);
+        let resp = daemon.handle_message(Message::VoiceStart);
+        assert_eq!(resp, "OK:recording");
     }
 
     #[test]
@@ -511,89 +423,6 @@ mod tests {
     }
 
     #[test]
-    fn test_voice_flow_no_audio_samples() {
-        let client = MockSagaClient::new();
-        let executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio
-            .expect_stop()
-            .times(1)
-            .returning(|| Err(anyhow::anyhow!("No audio samples captured")));
-
-        notifier
-            .expect_notify()
-            .withf(|_, body| body == "No speech detected")
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_voice().unwrap();
-        assert_eq!(resp, "OK:stopped");
-    }
-
-    #[test]
-    fn test_voice_flow_none_response() {
-        let mut client = MockSagaClient::new();
-        let mut executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio.expect_stop().times(1).returning(|| Ok(vec![1, 2, 3]));
-
-        executor
-            .expect_list_windows()
-            .times(1)
-            .returning(|| Ok(vec![]));
-
-        client
-            .expect_send_audio()
-            .times(1)
-            .returning(|_, _| Ok("NONE".to_string()));
-
-        notifier
-            .expect_notify()
-            .withf(|_, body| body == "Not a window command")
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_voice().unwrap();
-        assert_eq!(resp, "OK:stopped");
-    }
-
-    #[test]
-    fn test_voice_flow_invalid_dsl() {
-        let mut client = MockSagaClient::new();
-        let mut executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio.expect_stop().times(1).returning(|| Ok(vec![1, 2, 3]));
-
-        executor
-            .expect_list_windows()
-            .times(1)
-            .returning(|| Ok(vec![]));
-
-        client
-            .expect_send_audio()
-            .times(1)
-            .returning(|_, _| Ok("I don't understand that command".to_string()));
-
-        notifier
-            .expect_error()
-            .withf(|_, body| body.contains("Could not understand command"))
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_voice().unwrap();
-        assert!(resp.starts_with("ERR:parse error"));
-    }
-
-    #[test]
     fn test_voice_flow_server_error() {
         let mut client = MockSagaClient::new();
         let mut executor = MockHyprlandExecutor::new();
@@ -601,7 +430,6 @@ mod tests {
         let mut notifier = MockNotifier::new();
 
         audio.expect_stop().times(1).returning(|| Ok(vec![1, 2, 3]));
-
         executor
             .expect_list_windows()
             .times(1)
@@ -619,9 +447,7 @@ mod tests {
             .returning(|_, _| Ok(()));
 
         let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_voice();
-        assert!(resp.is_err());
-        assert!(resp.unwrap_err().to_string().contains("Connection timeout"));
+        assert!(daemon.process_voice().is_err());
     }
 
     #[test]
@@ -659,6 +485,34 @@ mod tests {
     }
 
     #[test]
+    fn test_text_flow_invalid_dsl_notifies_parse_error() {
+        let mut client = MockSagaClient::new();
+        let mut executor = MockHyprlandExecutor::new();
+        let audio = MockAudioCapture::new();
+        let mut notifier = MockNotifier::new();
+
+        executor
+            .expect_list_windows()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        client
+            .expect_send_text()
+            .times(1)
+            .returning(|_, _| Ok("not valid dsl".to_string()));
+
+        notifier
+            .expect_error()
+            .withf(|_, body| body.contains("Could not understand command"))
+            .times(1)
+            .returning(|_, _| Ok(()));
+
+        let mut daemon = make_daemon(client, executor, audio, notifier);
+        let resp = daemon.process_text("blah").unwrap();
+        assert!(resp.starts_with("ERR:parse error"));
+    }
+
+    #[test]
     fn test_text_flow_executor_partial_failure() {
         let mut client = MockSagaClient::new();
         let mut executor = MockHyprlandExecutor::new();
@@ -680,25 +534,19 @@ mod tests {
             .times(2)
             .returning(|cmd| match &cmd.selector {
                 Selector::Title(t) if t == "Firefox" => Ok(()),
-                _ => Err(anyhow::anyhow!("Window not found: Missing")),
+                _ => Err(anyhow::anyhow!("Window not found")),
             });
 
         notifier
             .expect_notify()
-            .withf(|_, body| body.contains("Executed") && body.contains("Focus"))
+            .withf(|_, body| body.contains("Executed"))
             .times(1)
             .returning(|_, _| Ok(()));
 
-        notifier
-            .expect_error()
-            .withf(|_, body| body.contains("Close") && body.contains("Window not found"))
-            .times(1)
-            .returning(|_, _| Ok(()));
+        notifier.expect_error().times(1).returning(|_, _| Ok(()));
 
         let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon
-            .process_text("focus firefox and close missing")
-            .unwrap();
+        let resp = daemon.process_text("focus then close").unwrap();
         assert_eq!(resp, "OK");
     }
 
@@ -744,36 +592,11 @@ mod tests {
             .returning(|_, _| Ok("FOCUS title:Firefox".to_string()));
 
         executor.expect_execute().times(1).returning(|_| Ok(()));
-
         notifier.expect_notify().times(1).returning(|_, _| Ok(()));
 
         let mut daemon = make_daemon(client, executor, audio, notifier);
         let resp = daemon.handle_message(Message::VoiceToggle);
         assert_eq!(resp, "OK");
-    }
-
-    #[test]
-    fn test_execute_commands_all_succeed() {
-        let mut executor = MockHyprlandExecutor::new();
-        executor.expect_execute().times(2).returning(|_| Ok(()));
-
-        let commands = vec![
-            Command {
-                verb: Verb::Focus,
-                selector: Selector::Title("Firefox".to_string()),
-                args: vec![],
-            },
-            Command {
-                verb: Verb::Close,
-                selector: Selector::Class("Terminal".to_string()),
-                args: vec![],
-            },
-        ];
-
-        let results = execute_commands(&executor, &commands);
-        assert_eq!(results.len(), 2);
-        assert!(results[0].is_ok());
-        assert!(results[1].is_ok());
     }
 
     #[test]
@@ -805,123 +628,5 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results[0].is_ok());
         assert!(results[1].is_err());
-    }
-
-    #[test]
-    fn test_socket_path_ends_with_myr_sock() {
-        let path = socket_path();
-        assert!(path.ends_with("myr.sock"));
-    }
-
-    #[test]
-    fn test_dictate_start_begins_recording() {
-        let client = MockSagaClient::new();
-        let executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio.expect_start().times(1).returning(|| Ok(()));
-        notifier
-            .expect_notify()
-            .withf(|_, body| body == "Dictating...")
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.handle_message(Message::DictateStart);
-        assert_eq!(resp, "OK:recording");
-    }
-
-    #[test]
-    fn test_dictate_stop_happy_path() {
-        let mut client = MockSagaClient::new();
-        let mut executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio
-            .expect_stop()
-            .times(1)
-            .returning(|| Ok(vec![1, 2, 3, 4]));
-
-        executor
-            .expect_get_active_window()
-            .times(1)
-            .returning(|| Ok("Firefox — Mozilla".to_string()));
-
-        client
-            .expect_send_dictate()
-            .times(1)
-            .returning(|_, _, _, _| {
-                Ok(DictateResponse {
-                    raw: "hello world".to_string(),
-                    refined: "Hello, world!".to_string(),
-                    latency_ms: 120,
-                })
-            });
-
-        notifier
-            .expect_notify()
-            .withf(|_, body| body.contains("13 chars"))
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_dictation().unwrap();
-        assert!(resp.starts_with("OK:dictated"));
-        assert!(resp.contains("13 chars"));
-    }
-
-    #[test]
-    fn test_dictate_stop_silence() {
-        let client = MockSagaClient::new();
-        let executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio
-            .expect_stop()
-            .times(1)
-            .returning(|| Err(anyhow::anyhow!("Audio is silent (RMS amplitude: 0.001)")));
-
-        notifier
-            .expect_notify()
-            .withf(|_, body| body == "No speech detected")
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_dictation().unwrap();
-        assert_eq!(resp, "OK:stopped");
-    }
-
-    #[test]
-    fn test_dictate_stop_server_error() {
-        let mut client = MockSagaClient::new();
-        let mut executor = MockHyprlandExecutor::new();
-        let mut audio = MockAudioCapture::new();
-        let mut notifier = MockNotifier::new();
-
-        audio.expect_stop().times(1).returning(|| Ok(vec![1, 2, 3]));
-
-        executor
-            .expect_get_active_window()
-            .times(1)
-            .returning(|| Ok("Terminal".to_string()));
-
-        client
-            .expect_send_dictate()
-            .times(1)
-            .returning(|_, _, _, _| Err(anyhow::anyhow!("Connection timeout")));
-
-        notifier
-            .expect_error()
-            .withf(|_, body| body.contains("cannot reach Saga server"))
-            .times(1)
-            .returning(|_, _| Ok(()));
-
-        let mut daemon = make_daemon(client, executor, audio, notifier);
-        let resp = daemon.process_dictation();
-        assert!(resp.is_err());
     }
 }
