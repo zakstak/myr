@@ -33,8 +33,8 @@ Myr is env-only. No config files are read or written.
 | `VOICE_API_KEY` | (required) | API key sent as `x-api-key` to Saga Voice API. |
 | `SAGA_API_KEY` | (fallback) | Backward-compatible fallback if `VOICE_API_KEY` is unset. |
 | `SAGA_API_URL` | `http://localhost:${MYR_LOCAL_PORT}` | Base URL for Saga API client. |
-| `SAGA_HOST` | `192.168.4.111` | SSH jump host used to build tunnel. |
-| `SAGA_VOICE_IP` | `10.0.0.60` | Voice API private IP reached through SSH tunnel. |
+| `SAGA_HOST` | `<proxmox-host>` | SSH jump host used to build tunnel. |
+| `SAGA_VOICE_IP` | `<voice-ip>` | Voice API private IP reached through SSH tunnel. |
 | `SAGA_VOICE_PORT` | `8765` | Voice API port reached through SSH tunnel. |
 | `MYR_LOCAL_PORT` | `18765` | Local tunnel bind port. |
 | `MYR_SOCKET` | `$XDG_RUNTIME_DIR/myr.sock` | Optional daemon socket override. |
