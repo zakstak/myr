@@ -274,15 +274,17 @@ fn parse_message(line: &str) -> Option<Message> {
         "VOICE_STOP" => Some(Message::VoiceStop),
         "VOICE_TOGGLE" => Some(Message::VoiceToggle),
         "PING" => Some(Message::Ping),
-        s if s.starts_with("TEXT:") => {
-            let text = s.strip_prefix("TEXT:").unwrap();
-            if text.is_empty() {
-                None
+        s => {
+            if let Some(text) = s.strip_prefix("TEXT:") {
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(Message::Text(text.to_string()))
+                }
             } else {
-                Some(Message::Text(text.to_string()))
+                None
             }
         }
-        _ => None,
     }
 }
 
