@@ -12,7 +12,6 @@ pub struct TunnelConfig {
 
 pub struct SshTunnel {
     process: Option<Child>,
-    local_port: String,
 }
 
 impl SshTunnel {
@@ -22,10 +21,7 @@ impl SshTunnel {
         // Check if already reachable
         if Self::check_health(&health_url) {
             tracing::info!("Tunnel already reachable at {}", health_url);
-            return Ok(Self {
-                process: None,
-                local_port: config.local_port,
-            });
+            return Ok(Self { process: None });
         }
 
         tracing::info!("Setting up SSH tunnel via {}...", config.saga_host);
@@ -63,7 +59,6 @@ impl SshTunnel {
         tracing::info!("Tunnel established");
         Ok(Self {
             process: Some(child),
-            local_port: config.local_port,
         })
     }
 
@@ -121,10 +116,7 @@ mod tests {
     #[test]
     fn test_tunnel_drop_cleanup() {
         // Create a mock tunnel without actually establishing SSH
-        let mut tunnel = SshTunnel {
-            process: None,
-            local_port: "18765".to_string(),
-        };
+        let mut tunnel = SshTunnel { process: None };
 
         // Test that teardown works on None process
         assert!(tunnel.teardown().is_ok());
