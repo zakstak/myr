@@ -45,7 +45,7 @@ impl Command {
         match self.verb {
             Verb::Focus => format!("dispatch focuswindow {}", selector_str),
             Verb::Move => {
-                let direction = self.args.get(0).map(|s| s.as_str()).unwrap_or("");
+                let direction = self.args.first().map(|s| s.as_str()).unwrap_or("");
                 let dir_short = match direction.to_uppercase().as_str() {
                     "LEFT" => "l",
                     "RIGHT" => "r",
@@ -59,7 +59,7 @@ impl Command {
                 )
             }
             Verb::Resize => {
-                let width_pct = self.args.get(0).map(|s| s.as_str()).unwrap_or("50");
+                let width_pct = self.args.first().map(|s| s.as_str()).unwrap_or("50");
                 let height_pct = self.args.get(1).map(|s| s.as_str()).unwrap_or("50");
                 format!(
                     "dispatch focuswindow {} ; dispatch resizeactive {}% {}%",
@@ -72,7 +72,7 @@ impl Command {
                 selector_str
             ),
             Verb::Swap => {
-                let sel2_raw = self.args.get(0).map(|s| s.as_str()).unwrap_or("");
+                let sel2_raw = self.args.first().map(|s| s.as_str()).unwrap_or("");
                 format!(
                     "dispatch focuswindow {} ; dispatch swapwindow {}",
                     selector_str, sel2_raw

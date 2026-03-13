@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ pub struct CpalAudioCapture {
     samples: Arc<Mutex<Vec<f32>>>,
     stream: Option<cpal::Stream>,
     recording: Arc<Mutex<bool>>,
+    timeout_cancel: Option<Sender<()>>,
     timeout_handle: Option<std::thread::JoinHandle<()>>,
     sample_rate: u32,
 }
@@ -24,9 +26,67 @@ impl CpalAudioCapture {
             samples: Arc::new(Mutex::new(Vec::new())),
             stream: None,
             recording: Arc::new(Mutex::new(false)),
+            timeout_cancel: None,
             timeout_handle: None,
             sample_rate: 16000,
         }
+    }
+
+    fn spawn_timeout_worker(&mut self) {
+        self.cancel_timeout_worker();
+
+        let recording_timeout = Arc::clone(&self.recording);
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        let timeout_handle = std::thread::spawn(move || {
+            if cancel_rx.recv_timeout(Duration::from_secs(30)).is_err() {
+                let mut recording = recording_timeout.lock().unwrap();
+                if *recording {
+                    *recording = false;
+                    tracing::warn!("Audio recording timed out after 30 seconds");
+                }
+            }
+        });
+
+        self.timeout_cancel = Some(cancel_tx);
+        self.timeout_handle = Some(timeout_handle);
+    }
+
+    fn cancel_timeout_worker(&mut self) {
+        if let Some(cancel_tx) = self.timeout_cancel.take() {
+            let _ = cancel_tx.send(());
+        }
+
+        if let Some(timeout_handle) = self.timeout_handle.take() {
+            let _ = timeout_handle.join();
+        }
+    }
+
+    fn begin_recording_session(&mut self, start_result: Result<()>) -> Result<()> {
+        start_result?;
+
+        {
+            let mut recording = self.recording.lock().unwrap();
+            *recording = true;
+        }
+
+        self.spawn_timeout_worker();
+        Ok(())
+    }
+}
+
+impl Default for CpalAudioCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CpalAudioCapture {
+    fn drop(&mut self) {
+        if let Ok(mut recording) = self.recording.lock() {
+            *recording = false;
+        }
+
+        self.cancel_timeout_worker();
     }
 }
 
@@ -47,11 +107,6 @@ impl AudioCapture for CpalAudioCapture {
             let mut samples = self.samples.lock().unwrap();
             samples.clear();
         }
-        {
-            let mut recording = self.recording.lock().unwrap();
-            *recording = true;
-        }
-
         let samples_clone = Arc::clone(&self.samples);
         let recording_clone = Arc::clone(&self.recording);
 
@@ -104,17 +159,8 @@ impl AudioCapture for CpalAudioCapture {
             _ => bail!("Unsupported sample format: {:?}", config.sample_format()),
         };
 
-        stream.play().context("Failed to start audio stream")?;
+        self.begin_recording_session(stream.play().context("Failed to start audio stream"))?;
         self.stream = Some(stream);
-
-        let recording_timeout = Arc::clone(&self.recording);
-        let timeout_handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(30));
-            let mut recording = recording_timeout.lock().unwrap();
-            *recording = false;
-            tracing::warn!("Audio recording timed out after 30 seconds");
-        });
-        self.timeout_handle = Some(timeout_handle);
 
         Ok(())
     }
@@ -125,8 +171,7 @@ impl AudioCapture for CpalAudioCapture {
             *recording = false;
         }
 
-        // Timeout thread will exit naturally since recording is now false
-        self.timeout_handle.take();
+        self.cancel_timeout_worker();
 
         if let Some(stream) = self.stream.take() {
             drop(stream);
@@ -251,5 +296,68 @@ mod tests {
             *recording = false;
         }
         assert!(!capture.is_recording());
+    }
+
+    #[test]
+    fn test_cancel_timeout_worker_clears_worker_without_changing_recording() {
+        let mut capture = CpalAudioCapture::new();
+        {
+            let mut recording = capture.recording.lock().unwrap();
+            *recording = true;
+        }
+
+        capture.spawn_timeout_worker();
+        capture.cancel_timeout_worker();
+
+        assert!(capture.is_recording());
+        assert!(capture.timeout_cancel.is_none());
+        assert!(capture.timeout_handle.is_none());
+    }
+
+    #[test]
+    fn test_spawning_new_timeout_worker_replaces_old_worker() {
+        let mut capture = CpalAudioCapture::new();
+
+        capture.spawn_timeout_worker();
+        let first_handle = capture
+            .timeout_handle
+            .as_ref()
+            .map(|handle| handle.thread().id())
+            .expect("first timeout worker should exist");
+
+        capture.spawn_timeout_worker();
+        let second_handle = capture
+            .timeout_handle
+            .as_ref()
+            .map(|handle| handle.thread().id())
+            .expect("second timeout worker should exist");
+
+        assert_ne!(first_handle, second_handle);
+        capture.cancel_timeout_worker();
+    }
+
+    #[test]
+    fn test_failed_begin_recording_session_leaves_capture_idle() {
+        let mut capture = CpalAudioCapture::new();
+
+        let result = capture.begin_recording_session(Err(anyhow!("start failed")));
+
+        assert!(result.is_err());
+        assert!(!capture.is_recording());
+        assert!(capture.timeout_cancel.is_none());
+        assert!(capture.timeout_handle.is_none());
+    }
+
+    #[test]
+    fn test_drop_cancels_timeout_worker() {
+        let mut capture = CpalAudioCapture::new();
+        let recording = Arc::clone(&capture.recording);
+
+        capture.spawn_timeout_worker();
+        assert_eq!(Arc::strong_count(&recording), 3);
+
+        drop(capture);
+
+        assert_eq!(Arc::strong_count(&recording), 1);
     }
 }
