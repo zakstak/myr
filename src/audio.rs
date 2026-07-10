@@ -97,9 +97,29 @@ impl AudioCapture for CpalAudioCapture {
             .default_input_device()
             .ok_or_else(|| anyhow!("No default input device found"))?;
 
-        let config = device
+        let default_config = device
             .default_input_config()
             .context("Failed to get default input config")?;
+
+        // CPAL 0.18 can prefer 24/32-bit formats for the default input device.
+        // Keep the recorder's conversion path explicit by choosing an available
+        // format it supports instead of rejecting those devices outright.
+        let config = match default_config.sample_format() {
+            cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16 => {
+                default_config
+            }
+            default_format => device
+                .supported_input_configs()
+                .context("Failed to enumerate supported input configs")?
+                .find(|config| {
+                    matches!(
+                        config.sample_format(),
+                        cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+                    )
+                })
+                .map(|config| config.with_max_sample_rate())
+                .ok_or_else(|| anyhow!("Unsupported sample format: {default_format:?}; no F32, I16, or U16 input config is available"))?,
+        };
 
         self.sample_rate = config.sample_rate();
 
