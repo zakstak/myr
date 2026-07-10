@@ -97,11 +97,31 @@ impl AudioCapture for CpalAudioCapture {
             .default_input_device()
             .ok_or_else(|| anyhow!("No default input device found"))?;
 
-        let config = device
+        let default_config = device
             .default_input_config()
             .context("Failed to get default input config")?;
 
-        self.sample_rate = config.sample_rate().0;
+        // CPAL 0.18 can prefer 24/32-bit formats for the default input device.
+        // Keep the recorder's conversion path explicit by choosing an available
+        // format it supports instead of rejecting those devices outright.
+        let config = match default_config.sample_format() {
+            cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16 => {
+                default_config
+            }
+            default_format => device
+                .supported_input_configs()
+                .context("Failed to enumerate supported input configs")?
+                .find(|config| {
+                    matches!(
+                        config.sample_format(),
+                        cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+                    )
+                })
+                .map(|config| config.with_max_sample_rate())
+                .ok_or_else(|| anyhow!("Unsupported sample format: {default_format:?}; no F32, I16, or U16 input config is available"))?,
+        };
+
+        self.sample_rate = config.sample_rate();
 
         {
             let mut samples = self.samples.lock().unwrap();
@@ -114,7 +134,7 @@ impl AudioCapture for CpalAudioCapture {
             cpal::SampleFormat::F32 => {
                 let config: cpal::StreamConfig = config.into();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         if *recording_clone.lock().unwrap() {
                             let mut samples = samples_clone.lock().unwrap();
@@ -128,7 +148,7 @@ impl AudioCapture for CpalAudioCapture {
             cpal::SampleFormat::I16 => {
                 let config: cpal::StreamConfig = config.into();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         if *recording_clone.lock().unwrap() {
                             let mut samples = samples_clone.lock().unwrap();
@@ -142,7 +162,7 @@ impl AudioCapture for CpalAudioCapture {
             cpal::SampleFormat::U16 => {
                 let config: cpal::StreamConfig = config.into();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         if *recording_clone.lock().unwrap() {
                             let mut samples = samples_clone.lock().unwrap();
@@ -260,13 +280,13 @@ mod tests {
 
     #[test]
     fn test_silence_detection() {
-        let silent_samples = vec![0.001, -0.002, 0.0015, -0.0005];
+        let silent_samples = [0.001, -0.002, 0.0015, -0.0005];
         let rms = (silent_samples.iter().map(|&s| s * s).sum::<f32>()
             / silent_samples.len() as f32)
             .sqrt();
         assert!(rms < 0.01, "Silent samples should have RMS < 0.01");
 
-        let audible_samples = vec![0.5, -0.5, 0.3, -0.3];
+        let audible_samples = [0.5, -0.5, 0.3, -0.3];
         let rms = (audible_samples.iter().map(|&s| s * s).sum::<f32>()
             / audible_samples.len() as f32)
             .sqrt();
